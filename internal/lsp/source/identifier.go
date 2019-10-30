@@ -30,7 +30,7 @@ type IdentifierInfo struct {
 		Object types.Object
 	}
 
-	Declaration Declaration
+	Declaration []Declaration
 
 	pkg              Package
 	ident            *ast.Ident
@@ -313,23 +313,20 @@ func importSpec(ctx context.Context, snapshot Snapshot, pkg Package, file *ast.F
 	if err != nil {
 		return nil, err
 	}
-	if importedPkg.GetSyntax() == nil {
+	// Heuristic: Return all files in the package and let client handle (#32993)
+	var dest []*ast.File
+	if dest = importedPkg.GetSyntax(); dest == nil {
 		return nil, errors.Errorf("no syntax for for %q", importPath)
 	}
-	// Heuristic: Jump to the longest (most "interesting") file of the package.
-	var dest *ast.File
-	for _, f := range importedPkg.GetSyntax() {
-		if dest == nil || f.End()-f.Pos() > dest.End()-dest.Pos() {
-			dest = f
-		}
-	}
-	if dest == nil {
+	if len(dest) == 0 {
 		return nil, errors.Errorf("package %q has no files", importPath)
 	}
-	if result.Declaration.mappedRange, err = posToMappedRange(ctx, pkg, dest.Pos(), dest.End()); err != nil {
-		return nil, err
+	for i, dst := range importedPkg.GetSyntax() {
+		if result.Declaration[i].mappedRange, err = posToMappedRange(ctx, pkg, dst.Pos(), dst.End()); err != nil {
+			return nil, err
+		}
 	}
-	result.Declaration.node = imp
+	result.Declaration[0].node = imp
 	return result, nil
 }
 

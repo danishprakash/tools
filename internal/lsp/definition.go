@@ -23,16 +23,20 @@ func (s *Server) definition(ctx context.Context, params *protocol.DefinitionPara
 	if err != nil {
 		return nil, err
 	}
-	decRange, err := ident.Declaration.Range()
-	if err != nil {
-		return nil, err
-	}
-	return []protocol.Location{
-		{
-			URI:   protocol.NewURI(ident.Declaration.URI()),
+
+	var pLoc []protocol.Location
+	for _, dc := range ident.Declaration {
+		decRange, err := dc.Range()
+		if err != nil {
+			return nil, err
+		}
+		pLoc = append(pLoc, protocol.Location{
+			URI:   protocol.NewURI(dc.URI()),
 			Range: decRange,
-		},
-	}, nil
+		})
+	}
+
+	return pLoc, nil
 }
 
 func (s *Server) typeDefinition(ctx context.Context, params *protocol.TypeDefinitionParams) ([]protocol.Location, error) {
