@@ -104,8 +104,14 @@ func HoverIdentifier(ctx context.Context, i *IdentifierInfo) (*HoverInformation,
 	// Determine the symbol's signature.
 	switch x := h.source.(type) {
 	case ast.Node:
+		var n ast.Node
+		if structCopy, ok := filterStructType(x); ok {
+			n = structCopy
+		} else {
+			n = x
+		}
 		var b strings.Builder
-		if err := format.Node(&b, fset, x); err != nil {
+		if err := format.Node(&b, fset, n); err != nil {
 			return nil, err
 		}
 		h.Signature = b.String()

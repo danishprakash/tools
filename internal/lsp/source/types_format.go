@@ -15,6 +15,7 @@ import (
 	"go/types"
 	"strings"
 
+	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/internal/event"
 	"golang.org/x/tools/internal/lsp/debug/tag"
 	"golang.org/x/tools/internal/lsp/protocol"
@@ -42,6 +43,214 @@ type signature struct {
 	params, results  []string
 	variadic         bool
 	needResultParens bool
+}
+
+func fieldName(x ast.Expr) *ast.Ident {
+	switch t := x.(type) {
+	case *ast.Ident:
+		return t
+	case *ast.SelectorExpr:
+		if _, ok := t.X.(*ast.Ident); ok {
+			return t.Sel
+		}
+	case *ast.StarExpr:
+		return fieldName(t.X)
+	}
+	return nil
+}
+
+func filterIdentList(list []*ast.Ident, f func(name string) bool) []*ast.Ident {
+	j := 0
+	for _, x := range list {
+		if f(x.Name) {
+			list[j] = x
+			j++
+		}
+	}
+	return list[0:j]
+}
+
+func cloneAST(original ast.Node) ast.Node {
+	m := make(map[ast.Node]ast.Node)
+	astutil.Apply(original, nil, func(c *astutil.Cursor) bool {
+		switch node := c.Node().(type) {
+		case nil:
+			// No-op.
+		case *ast.ArrayType:
+			m[node] = &ast.ArrayType{
+				Lbrack: node.Lbrack,
+				Len:    exprFromMap(m, node.Len),
+				Elt:    exprFromMap(m, node.Elt),
+			}
+		case *ast.BasicLit:
+			m[node] = &ast.BasicLit{
+				ValuePos: node.ValuePos,
+				Kind:     node.Kind,
+				Value:    node.Value,
+			}
+		case *ast.ChanType:
+			m[node] = &ast.ChanType{
+				Begin: node.Begin,
+				Arrow: node.Arrow,
+				Dir:   node.Dir,
+				Value: exprFromMap(m, node.Value),
+			}
+		case *ast.Comment:
+			m[node] = &ast.Comment{
+				Slash: node.Slash,
+				Text:  node.Text,
+			}
+		case *ast.CommentGroup:
+			cg := new(ast.CommentGroup)
+			if node.List != nil {
+				cg.List = make([]*ast.Comment, len(node.List))
+				for i := range node.List {
+					cg.List[i] = m[node.List[i]].(*ast.Comment)
+				}
+			}
+			m[node] = cg
+		case *ast.Field:
+			m[node] = &ast.Field{
+				Doc:     commentGroupFromMap(m, node.Doc),
+				Names:   copyIdentList(m, node.Names),
+				Type:    exprFromMap(m, node.Type),
+				Tag:     basicLitFromMap(m, node.Tag),
+				Comment: commentGroupFromMap(m, node.Comment),
+			}
+		case *ast.FieldList:
+			fl := &ast.FieldList{
+				Opening: node.Opening,
+				Closing: node.Closing,
+			}
+			if node.List != nil {
+				fl.List = make([]*ast.Field, len(node.List))
+				for i := range node.List {
+					fl.List[i] = m[node.List[i]].(*ast.Field)
+				}
+			}
+			m[node] = fl
+		case *ast.FuncType:
+			m[node] = &ast.FuncType{
+				Func:    node.Func,
+				Params:  fieldListFromMap(m, node.Params),
+				Results: fieldListFromMap(m, node.Results),
+			}
+		case *ast.Ident:
+			// Keep identifiers the same identity so they can be conveniently
+			// used with the original *types.Info.
+			m[node] = node
+		case *ast.InterfaceType:
+			m[node] = &ast.InterfaceType{
+				Interface:  node.Interface,
+				Methods:    fieldListFromMap(m, node.Methods),
+				Incomplete: node.Incomplete,
+			}
+		case *ast.MapType:
+			m[node] = &ast.MapType{
+				Map:   node.Map,
+				Key:   exprFromMap(m, node.Key),
+				Value: exprFromMap(m, node.Value),
+			}
+		case *ast.StarExpr:
+			m[node] = &ast.StarExpr{
+				Star: node.Star,
+				X:    exprFromMap(m, node.X),
+			}
+		case *ast.StructType:
+			m[node] = &ast.StructType{
+				Struct:     node.Struct,
+				Fields:     fieldListFromMap(m, node.Fields),
+				Incomplete: node.Incomplete,
+			}
+		default:
+			panic(fmt.Sprintf("unhandled AST node: %T", node))
+		}
+		return true
+	})
+	return m[original]
+}
+
+func commentGroupFromMap(m map[ast.Node]ast.Node, key *ast.CommentGroup) *ast.CommentGroup {
+	if key == nil {
+		return nil
+	}
+	return m[key].(*ast.CommentGroup)
+}
+
+func exprFromMap(m map[ast.Node]ast.Node, key ast.Expr) ast.Expr {
+	if key == nil {
+		return nil
+	}
+	return m[key].(ast.Expr)
+}
+
+func fieldListFromMap(m map[ast.Node]ast.Node, key *ast.FieldList) *ast.FieldList {
+	if key == nil {
+		return nil
+	}
+	return m[key].(*ast.FieldList)
+}
+
+func basicLitFromMap(m map[ast.Node]ast.Node, key *ast.BasicLit) *ast.BasicLit {
+	if key == nil {
+		return nil
+	}
+	return m[key].(*ast.BasicLit)
+}
+
+func copyIdentList(m map[ast.Node]ast.Node, idents []*ast.Ident) []*ast.Ident {
+	if idents == nil {
+		return nil
+	}
+	newIdents := make([]*ast.Ident, len(idents))
+	for i := range idents {
+		newIdents[i] = m[idents[i]].(*ast.Ident)
+	}
+	return newIdents
+}
+
+func filterStructType(x ast.Node) (ast.Node, bool) {
+	if _, ok := x.(*ast.StructType); !ok {
+		return x, false // not a struct
+	}
+
+	c := cloneAST(x)
+	filter := func(name string) bool { return ast.IsExported(name) }
+	ast.Inspect(c, func(c ast.Node) bool {
+		s, ok := c.(*ast.StructType)
+		if !ok {
+			return true
+		}
+
+		fields := s.Fields
+		if fields == nil {
+			return true
+		}
+
+		j := 0
+		list := fields.List
+
+		for _, f := range list {
+			keepField := false
+			if len(f.Names) == 0 {
+				// anonymous field
+				name := fieldName(f.Type)
+				keepField = name != nil && filter(name.Name)
+			} else {
+				f.Names = filterIdentList(f.Names, filter)
+				keepField = len(f.Names) > 0
+			}
+			if keepField {
+				list[j] = f
+				j++
+			}
+		}
+
+		fields.List = list[0:j]
+		return true
+	})
+
+	return c, true
 }
 
 func (s *signature) Format() string {
