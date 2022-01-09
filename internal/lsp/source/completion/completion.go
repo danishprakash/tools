@@ -230,6 +230,8 @@ type funcInfo struct {
 
 	// body is the function's body.
 	body *ast.BlockStmt
+
+	name string
 }
 
 type compLitInfo struct {
@@ -1688,6 +1690,7 @@ func enclosingFunction(path []ast.Node, info *types.Info) *funcInfo {
 		case *ast.FuncDecl:
 			if obj, ok := info.Defs[t.Name]; ok {
 				return &funcInfo{
+					name: t.Name.Name,
 					sig:  obj.Type().(*types.Signature),
 					body: t.Body,
 				}

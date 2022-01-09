@@ -6,6 +6,7 @@ package completion
 
 import (
 	"context"
+	"go/ast"
 	"go/types"
 	"strings"
 	"time"
@@ -236,6 +237,22 @@ func (c *completer) deepSearch(ctx context.Context) {
 	}
 }
 
+func isTestSelectExpr(c *completer, cand *candidate) bool {
+	var isSelectExpr bool
+	for _, n := range c.path {
+		if _, ok := n.(*ast.SelectorExpr); ok {
+			isSelectExpr = true
+			break
+		}
+	}
+
+	if !isSelectExpr {
+		return false
+	}
+
+	return cand.obj.Name()[0] == c.enclosingFunc.name[0]
+}
+
 // addCandidate adds a completion candidate to suggestions, without searching
 // its members for more candidates.
 func (c *completer) addCandidate(ctx context.Context, cand *candidate) {
@@ -254,6 +271,11 @@ func (c *completer) addCandidate(ctx context.Context, cand *candidate) {
 		if _, isNamed := obj.Type().(*types.Named); isNamed {
 			c.literal(ctx, obj.Type(), cand.imp)
 		}
+	}
+
+	// Increase score if we're completing a Test function param
+	if isTestSelectExpr(c, cand) {
+		cand.score *= 1.1
 	}
 
 	// Lower score of method calls so we prefer fields and vars over calls.
